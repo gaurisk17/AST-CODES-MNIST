@@ -13,45 +13,82 @@ print(f"Device is {device}")
 num_classes = 10
 batch_size = 128
 num_epochs = 50
-learning_rate = 0.001  # Lower learning rate for adaptive methods
-alpha = 0.99          # RMSprop decay rate
+learning_rate = 0.001  # Standard learning rate for RMSprop
+alpha = 0.99  # Smoothing constant
+eps = 1e-8    # Small constant for numerical stability
 
-# For MNIST, we need to convert single channel to 3 channels for AlexNet
+# Convert grayscale to RGB
 class GrayscaleToRGB(nn.Module):
     def forward(self, x):
         return x.repeat(1, 3, 1, 1)
 
+# Wrapper for AlexNet to handle grayscale input
+class MNISTAlexNet(nn.Module):
+    def __init__(self, original_model, num_classes):
+        super(MNISTAlexNet, self).__init__()
+        self.grayscale_to_rgb = GrayscaleToRGB()
+        self.features = original_model.features
+        self.avgpool = original_model.avgpool
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=0.5),
+            nn.Linear(256 * 6 * 6, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.5),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.grayscale_to_rgb(x)
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+# Data transformations
 transform_train = transforms.Compose([
     transforms.RandomRotation(10),
     transforms.Resize(224),  # AlexNet requires 224x224 input
     transforms.ToTensor(),
-    transforms.Normalize((0.1307,), (0.3081,)),  # MNIST normalization
-    GrayscaleToRGB()
+    transforms.Normalize((0.1307,), (0.3081,))  # MNIST normalization
 ])
 
 transform_test = transforms.Compose([
-    transforms.Resize(224),  # AlexNet requires 224x224 input
+    transforms.Resize(224),
     transforms.ToTensor(),
-    transforms.Normalize((0.1307,), (0.3081,)),  # MNIST normalization
-    GrayscaleToRGB()
+    transforms.Normalize((0.1307,), (0.3081,))
 ])
 
-trainset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform_train)
-train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
+# Load datasets
+trainset = torchvision.datasets.MNIST(root='./data', train=True,
+                                    download=True, transform=transform_train)
+train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
+                                         shuffle=True)
 
-testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform_test)
-test_loader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
+testset = torchvision.datasets.MNIST(root='./data', train=False,
+                                   download=True, transform=transform_test)
+test_loader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
+                                        shuffle=False)
 
-model = models.alexnet(weights=models.AlexNet_Weights.IMAGENET1K_V1)
-model.classifier[6] = nn.Linear(4096, num_classes)  # Modify the last layer for MNIST
-model.to(device)
+# Initialize model
+base_model = models.alexnet(weights=models.AlexNet_Weights.DEFAULT)
+model = MNISTAlexNet(base_model, num_classes).to(device)
 
+# Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, alpha=alpha, weight_decay=5e-4)
+# RMSprop optimizer
+optimizer = optim.RMSprop(model.parameters(), lr=learning_rate,
+                         alpha=alpha, eps=eps,
+                         weight_decay=5e-4, momentum=0)
 
+# Training metrics storage
 train_loss_list = []
 accuracy_list = []
 
+# Training loop
+print("Training AlexNet with RMSprop optimizer")
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
@@ -60,6 +97,7 @@ for epoch in range(num_epochs):
 
     for inputs, targets in tqdm(train_loader, desc=f"Epoch [{epoch+1}/{num_epochs}]"):
         inputs, targets = inputs.to(device), targets.to(device)
+
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, targets)
@@ -77,20 +115,41 @@ for epoch in range(num_epochs):
     train_loss_list.append(train_loss)
     accuracy_list.append(accuracy)
 
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss:.4f}, Accuracy: {accuracy:.2f}%")
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss:.4f}, "
+          f"Accuracy: {accuracy:.2f}%")
 
+# Plot training loss
 plt.figure(figsize=(10, 6))
 plt.plot(train_loss_list, label='RMSprop')
 plt.xlabel("Epochs")
-plt.ylabel("Training loss")
-plt.title("MNIST Training Loss for RMSprop Optimizer (AlexNet)")
+plt.ylabel("Training Loss")
+plt.title("MNIST Training Loss with AlexNet (RMSprop)")
 plt.legend(loc='upper right')
+plt.grid(True)
 plt.show()
 
+# Plot accuracy
 plt.figure(figsize=(10, 6))
 plt.plot(accuracy_list, label='RMSprop')
 plt.xlabel("Epochs")
 plt.ylabel("Accuracy (%)")
-plt.title("MNIST Training Accuracy for RMSprop Optimizer (AlexNet)")
+plt.title("MNIST Training Accuracy with AlexNet (RMSprop)")
 plt.legend(loc='lower right')
+plt.grid(True)
 plt.show()
+
+# Evaluation on test set
+model.eval()
+test_correct = 0
+test_total = 0
+
+with torch.no_grad():
+    for inputs, targets in tqdm(test_loader, desc="Testing"):
+        inputs, targets = inputs.to(device), targets.to(device)
+        outputs = model(inputs)
+        _, predicted = outputs.max(1)
+        test_total += targets.size(0)
+        test_correct += predicted.eq(targets).sum().item()
+
+test_accuracy = 100. * test_correct / test_total
+print(f"\nTest Accuracy: {test_accuracy:.2f}%")
