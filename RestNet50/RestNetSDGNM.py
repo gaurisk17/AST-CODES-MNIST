@@ -13,46 +13,67 @@ print(f"Device is {device}")
 num_classes = 10
 batch_size = 128
 num_epochs = 50
-learning_rate = 0.01  # Higher learning rate for SGD variants
-momentum = 0.9       # Momentum factor
+learning_rate = 0.01
+momentum = 0.9  # Momentum parameter
 
-# For MNIST, we need to convert single channel to 3 channels for ResNet
+# Convert grayscale to RGB
 class GrayscaleToRGB(nn.Module):
     def forward(self, x):
         return x.repeat(1, 3, 1, 1)
 
+# Wrapper for ResNet to handle grayscale input
+class MNISTResNet(nn.Module):
+    def __init__(self, original_model, num_classes):
+        super(MNISTResNet, self).__init__()
+        self.grayscale_to_rgb = GrayscaleToRGB()
+        self.resnet = original_model
+        self.resnet.fc = nn.Linear(self.resnet.fc.in_features, num_classes)
+
+    def forward(self, x):
+        x = self.grayscale_to_rgb(x)
+        return self.resnet(x)
+
+# Data transformations
 transform_train = transforms.Compose([
     transforms.RandomRotation(10),
     transforms.Resize(224),  # ResNet50 requires 224x224 input
     transforms.ToTensor(),
-    transforms.Normalize((0.1307,), (0.3081,)),  # MNIST normalization
-    GrayscaleToRGB()
+    transforms.Normalize((0.1307,), (0.3081,))  # MNIST normalization
 ])
 
 transform_test = transforms.Compose([
-    transforms.Resize(224),  # ResNet50 requires 224x224 input
+    transforms.Resize(224),
     transforms.ToTensor(),
-    transforms.Normalize((0.1307,), (0.3081,)),  # MNIST normalization
-    GrayscaleToRGB()
+    transforms.Normalize((0.1307,), (0.3081,))
 ])
 
-trainset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform_train)
-train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
+# Load datasets
+trainset = torchvision.datasets.MNIST(root='./data', train=True,
+                                    download=True, transform=transform_train)
+train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
+                                         shuffle=True)
 
-testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform_test)
-test_loader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
+testset = torchvision.datasets.MNIST(root='./data', train=False,
+                                   download=True, transform=transform_test)
+test_loader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
+                                        shuffle=False)
 
-model = models.resnet50(weights="IMAGENET1K_V2")
-num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, num_classes)
-model.to(device)
+# Initialize model
+base_model = models.resnet50(weights="IMAGENET1K_V2")
+model = MNISTResNet(base_model, num_classes).to(device)
 
+# Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, nesterov=True, weight_decay=5e-4)
+# SGD with Nesterov Momentum optimizer
+optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum,
+                     weight_decay=5e-4, nesterov=True)  # Added nesterov=True
 
+# Training metrics storage
 train_loss_list = []
 accuracy_list = []
 
+# Training loop
+print("Training with SGD-Nesterov Momentum optimizer")
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
@@ -61,6 +82,7 @@ for epoch in range(num_epochs):
 
     for inputs, targets in tqdm(train_loader, desc=f"Epoch [{epoch+1}/{num_epochs}]"):
         inputs, targets = inputs.to(device), targets.to(device)
+
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, targets)
@@ -78,20 +100,41 @@ for epoch in range(num_epochs):
     train_loss_list.append(train_loss)
     accuracy_list.append(accuracy)
 
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss:.4f}, Accuracy: {accuracy:.2f}%")
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss:.4f}, "
+          f"Accuracy: {accuracy:.2f}%")
 
+# Plot training loss
 plt.figure(figsize=(10, 6))
-plt.plot(train_loss_list, label='SGD with Nesterov')
+plt.plot(train_loss_list, label='SGD-Nesterov')
 plt.xlabel("Epochs")
-plt.ylabel("Training loss")
-plt.title("MNIST Training Loss for SGD with Nesterov Momentum")
+plt.ylabel("Training Loss")
+plt.title("MNIST Training Loss with SGD-Nesterov Momentum Optimizer")
 plt.legend(loc='upper right')
+plt.grid(True)
 plt.show()
 
+# Plot accuracy
 plt.figure(figsize=(10, 6))
-plt.plot(accuracy_list, label='SGD with Nesterov')
+plt.plot(accuracy_list, label='SGD-Nesterov')
 plt.xlabel("Epochs")
 plt.ylabel("Accuracy (%)")
-plt.title("MNIST Training Accuracy for SGD with Nesterov Momentum")
+plt.title("MNIST Training Accuracy with SGD-Nesterov Momentum Optimizer")
 plt.legend(loc='lower right')
+plt.grid(True)
 plt.show()
+
+# Evaluation on test set
+model.eval()
+test_correct = 0
+test_total = 0
+
+with torch.no_grad():
+    for inputs, targets in tqdm(test_loader, desc="Testing"):
+        inputs, targets = inputs.to(device), targets.to(device)
+        outputs = model(inputs)
+        _, predicted = outputs.max(1)
+        test_total += targets.size(0)
+        test_correct += predicted.eq(targets).sum().item()
+
+test_accuracy = 100. * test_correct / test_total
+print(f"\nTest Accuracy: {test_accuracy:.2f}%")
